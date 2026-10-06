@@ -1,0 +1,21 @@
+[project]
+name = "web-events-service"
+version = "0.1.0"
+description = "Microservicio interno de eventos del juego de simulación de vida (servidor gRPC events.v1)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.40.0",
+    "grpcio>=1.84.0",
+    "grpcio-tools>=1.84.0",
+    "protobuf>=7.36.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

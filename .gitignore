@@ -1,0 +1,26 @@
+# Python (gestionado por uv)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Stubs gRPC: se generan con `bash tools/gen_proto.sh proto/events.proto`
+# (lo mismo hace el Dockerfile durante el build). No se commitean para que no
+# puedan desincronizarse de `proto/events.proto`.
+server/_generated/
+
+# Build
+dist/
+build/
+*.log
+
+# Entorno y editores
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.tmp
