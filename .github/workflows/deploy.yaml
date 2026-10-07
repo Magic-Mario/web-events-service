@@ -1,0 +1,96 @@
+# Repo web-events-service: build + push + deploy SOLO del microservicio
+# `events` (Decisión 14 de la 001, FR-018, FR-019).
+#
+# Tags inmutables :git-sha y :semver; nunca `latest`.
+# El smoke es el del propio servicio: una llamada real a `events.v1.GetEvents`
+# dentro del pod, contra el clúster. Sólo si esa llamada falla se revierte.
+name: events-deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+  SERVICE: events
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build + push (:sha y :semver)
+        run: |
+          SHA_TAG="${ECR_REGISTRY}/${SERVICE}:${GITHUB_SHA}"
+          SEMVER="${GITHUB_REF_NAME#v}"
+          # Los stubs NO se commitean: `tools/gen_proto.sh` los genera DENTRO
+          # de esta imagen (Dockerfile, T049).
+          docker buildx build --push \
+            -t "$SHA_TAG" -t "${ECR_REGISTRY}/${SERVICE}:${SEMVER}" .
+          echo "IMAGE=$SHA_TAG" >> "$GITHUB_ENV"
+
+      - name: kubectl apply con el tag explícito
+        id: apply
+        env:
+          KUBECONFIG: ${{ secrets.BACKEND_KUBECONFIG }}
+        run: |
+          set -euo pipefail
+          # Sin la anotación IRSA el pod no puede leer su tabla y responde
+          # siempre con la semilla: mejor no desplegar.
+          if [ -z "${{ vars.EVENTS_IRSA_ROLE_ARN }}" ]; then
+            echo "::error::falta la variable EVENTS_IRSA_ROLE_ARN"
+            exit 1
+          fi
+          sed -i "s|image: EVENTS_IMAGE|image: ${IMAGE}|g" k8s/deployment.yaml
+          sed -i "s|eks.amazonaws.com/role-arn: EVENTS_IRSA_ROLE_ARN|eks.amazonaws.com/role-arn: ${{ vars.EVENTS_IRSA_ROLE_ARN }}|g" k8s/deployment.yaml
+          # `k8s/deployment.yaml` lleva el ServiceAccount delante del
+          # Deployment, así que la anotación IRSA existe antes que el pod.
+          kubectl apply -f k8s/
+          kubectl rollout status deployment/events --timeout=180s
+
+      - name: Smoke de events.v1 (GetEvents contra el clúster)
+        id: smoke
+        env:
+          KUBECONFIG: ${{ secrets.BACKEND_KUBECONFIG }}
+        run: |
+          set -euo pipefail
+          # La llamada sale de dentro del pod con el stub que ya trae la
+          # imagen: ni port-forward ni dependencias en el runner.
+          kubectl exec -i deployment/events -- python - <<'PY'
+          import grpc
+
+          from server._generated import events_pb2, events_pb2_grpc
+
+          with grpc.insecure_channel("localhost:50051") as channel:
+              stub = events_pb2_grpc.EventsServiceStub(channel)
+              response = stub.GetEvents(
+                  events_pb2.GetEventsRequest(year=1990, age_years=30, limit=5),
+                  timeout=15,
+              )
+
+          assert response.events, "events.v1 no devolvió ningún suceso"
+          assert all(e.text and e.options for e in response.events), (
+              "hay un suceso sin texto o sin opciones"
+          )
+          assert all(o.deltas for e in response.events for o in e.options), (
+              "SC-003: hay una opción sin deltas"
+          )
+          print(
+              "smoke events.v1 OK:",
+              events_pb2.EventOrigin.Name(response.origin),
+              len(response.events),
+          )
+          PY
+
+      - name: Revertir si el propio events.v1 no responde
+        if: failure() && steps.smoke.outcome == 'failure'
+        env:
+          KUBECONFIG: ${{ secrets.BACKEND_KUBECONFIG }}
+        run: kubectl rollout undo deployment/events

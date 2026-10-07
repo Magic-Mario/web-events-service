@@ -1,0 +1,19 @@
+# Servicio interno `events` — T048.
+#
+# **ClusterIP** en 50051: sólo lo consume el backend desde dentro del mismo
+# clúster. No hay Ingress ni anotación del ALB — el gRPC jamás cruza el
+# borde (research Decisión 4, principio I).
+apiVersion: v1
+kind: Service
+metadata:
+  name: events
+  labels:
+    app: events
+spec:
+  type: ClusterIP
+  selector:
+    app: events
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051

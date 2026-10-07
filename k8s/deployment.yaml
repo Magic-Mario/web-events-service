@@ -1,0 +1,73 @@
+# Microservicio `events` — T048.
+#
+# Se aplica en el clúster `backend`, en el namespace por defecto (research
+# Decisión 4). El gRPC vive en un ClusterIP: **jamás cruza el ALB**.
+#
+# El ServiceAccount va en el mismo fichero que el Deployment, delante, para
+# que `kubectl apply -f k8s/` lo cree antes que el pod — su anotación
+# `eks.amazonaws.com/role-arn` es lo que da acceso a DynamoDB (IRSA).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: events
+  annotations:
+    # Rol IRSA de `cloud-project-infra/iam.tf`: SÓLO puede tocar la tabla
+    # `${project}-events-cache`. Ni `${project}-lives`, ni `dynamodb:*`.
+    eks.amazonaws.com/role-arn: EVENTS_IRSA_ROLE_ARN
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: events
+  labels:
+    app: events
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: events
+  template:
+    metadata:
+      labels:
+        app: events
+    spec:
+      serviceAccountName: events
+      containers:
+        - name: events
+          image: EVENTS_IMAGE
+          imagePullPolicy: Always
+          ports:
+            - name: grpc
+              containerPort: 50051
+          env:
+            - name: PROJECT
+              value: life-simulator-mvp
+            # En el clúster se usa el endpoint regional de AWS; Floci
+            # (`http://localhost:4566`) es sólo para desarrollo local.
+            - name: DYNAMODB_ENDPOINT
+              value: ""
+            - name: AWS_REGION
+              value: us-east-1
+            - name: GRPC_PORT
+              value: "50051"
+            # Sin red saliente a Wikipedia la respuesta sale de la semilla
+            # (research Decisión 6); no hace falta cortarla.
+          # `tcpSocket`: el servicer no registra `grpc.health.v1.Health`, así
+          # que una sonda gRPC nativa siempre fallaría.
+          readinessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
