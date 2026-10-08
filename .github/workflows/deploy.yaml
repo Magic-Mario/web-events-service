@@ -42,16 +42,12 @@ jobs:
           KUBECONFIG: ${{ secrets.BACKEND_KUBECONFIG }}
         run: |
           set -euo pipefail
-          # Sin la anotación IRSA el pod no puede leer su tabla y responde
-          # siempre con la semilla: mejor no desplegar.
-          if [ -z "${{ vars.EVENTS_IRSA_ROLE_ARN }}" ]; then
-            echo "::error::falta la variable EVENTS_IRSA_ROLE_ARN"
-            exit 1
-          fi
+          # El ARN IRSA NO se sustituye en la CI: vive hard-coded en
+          # `k8s/serviceaccount.yaml` (única fuente de verdad, Decisión 13).
+          # Sólo se inyecta el tag de la imagen.
           sed -i "s|image: EVENTS_IMAGE|image: ${IMAGE}|g" k8s/deployment.yaml
-          sed -i "s|eks.amazonaws.com/role-arn: EVENTS_IRSA_ROLE_ARN|eks.amazonaws.com/role-arn: ${{ vars.EVENTS_IRSA_ROLE_ARN }}|g" k8s/deployment.yaml
-          # `k8s/deployment.yaml` lleva el ServiceAccount delante del
-          # Deployment, así que la anotación IRSA existe antes que el pod.
+          # `k8s/serviceaccount.yaml` define el ServiceAccount con su anotación
+          # IRSA; `kubectl apply -f k8s/` lo crea antes que el pod.
           kubectl apply -f k8s/
           kubectl rollout status deployment/events --timeout=180s
 

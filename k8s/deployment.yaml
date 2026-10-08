@@ -3,18 +3,9 @@
 # Se aplica en el clúster `backend`, en el namespace por defecto (research
 # Decisión 4). El gRPC vive en un ClusterIP: **jamás cruza el ALB**.
 #
-# El ServiceAccount va en el mismo fichero que el Deployment, delante, para
-# que `kubectl apply -f k8s/` lo cree antes que el pod — su anotación
-# `eks.amazonaws.com/role-arn` es lo que da acceso a DynamoDB (IRSA).
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: events
-  annotations:
-    # Rol IRSA de `cloud-project-infra/iam.tf`: SÓLO puede tocar la tabla
-    # `${project}-events-cache`. Ni `${project}-lives`, ni `dynamodb:*`.
-    eks.amazonaws.com/role-arn: EVENTS_IRSA_ROLE_ARN
----
+# El ServiceAccount NO vive en este fichero: está en `k8s/serviceaccount.yaml`
+# con su anotación IRSA hard-coded (la única fuente de verdad, Decisión 13 /
+# T091). El Deployment sólo lo referencia con `serviceAccountName: events`.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
