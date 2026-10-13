@@ -110,23 +110,41 @@ def test_every_seed_event_is_a_valid_playable_event() -> None:
         assert len(event.options) >= 2, "FR-003: siempre hay de elegir"
         for option in event.options:
             assert option.label
-            assert option.deltas, "SC-003: toda decisión cambia algo observable"
+            assert option.scores, "SC-003: toda decisión cambia algo observable"
+            for score in option.scores:
+                assert -6 <= score.score <= 6, "FR-009: scores, nunca puntos"
 
 
 # --- el catálogo embebido (T043) -------------------------------------------
 
 
 def test_the_embedded_seed_catalog_covers_every_type_and_never_runs_dry() -> None:
-    # Decisión 6: ~40 sucesos genéricos por tipo, sin año y en español.
+    # Decisión 6: ~40 sucesos genéricos por categoría de contenido, sin año y en
+    # español. El contenido razona en las 5 categorías heredadas de 002 y el
+    # `servicer` las proyecta al contrato (`_TYPE_TO_V2`, puente temporal), así
+    # que aquí se comprueba lo observable: los tres tipos de `events.v2`.
     from seed_catalog import load_seed_events
+    from server.servicer import to_life_event
 
     events = load_seed_events()
+    projected = [to_life_event(event) for event in events]
 
-    valid_types = set(events_pb2.EventType.keys()) - {"EVENT_TYPE_UNSPECIFIED"}
-    assert {event.type for event in events} == valid_types
-    for event_type in valid_types:
-        count = sum(1 for event in events if event.type == event_type)
-        assert count >= 40, f"{event_type}: hacen falta ~40 sucesos de reserva"
+    def v2_name(event: events_pb2.LifeEvent) -> str:
+        return events_pb2.EventType.Name(event.type)
+
+    v2_types = {v2_name(event) for event in projected}
+    assert v2_types == {"MAIN", "DAILY", "RELATIONSHIPS"}
+    for name in v2_types:
+        count = sum(1 for event in projected if v2_name(event) == name)
+        assert count >= 40, f"{name}: hacen falta ~40 sucesos de reserva"
+
+    # Todo suceso declara sistema válido o ninguno (FR-020).
+    assert {event.system for event in projected} <= {
+        "",
+        "education",
+        "work",
+        "relationships",
+    }
 
     # Ninguna entrada se queda sin opciones ni con opciones sin efecto.
     for event in events:
@@ -135,9 +153,9 @@ def test_the_embedded_seed_catalog_covers_every_type_and_never_runs_dry() -> Non
         for option in event.options:
             assert option["deltas"], f"{event.type}: SC-003"
 
-    # Van intercalados: los primeros N sucesos no pueden ser todos del mismo
-    # tipo, o un año entero en fallback se vería monótono.
-    assert {event.type for event in events[:5]} == valid_types
+    # Van intercalados: los primeros 5 sucesos cubren los tres tipos del
+    # contrato, o un año entero en fallback se vería monótono.
+    assert {v2_name(event) for event in projected[:5]} == v2_types
 
     # Nunca se cachea: si lo fuera, el año quedaría bloqueado en la semilla.
     assert all(event.source_url == "seed" for event in events)

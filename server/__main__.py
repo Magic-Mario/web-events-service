@@ -1,4 +1,4 @@
-"""Punto de entrada del microservicio: servidor gRPC `events.v1` (T047).
+"""Punto de entrada del microservicio: servidor gRPC `events.v2` (T047).
 
 Escucha en el puerto **50051** dentro del clúster `backend` — un `ClusterIP`
 al que sólo llega el backend (research Decisión 4): **el gRPC jamás cruza el
@@ -46,7 +46,7 @@ def main() -> int:
         return 1
 
     server.start()
-    logger.info("events.v1 escuchando en el puerto %s", GRPC_PORT)
+    logger.info("events.v2 escuchando en el puerto %s", GRPC_PORT)
 
     def shutdown(signum, _frame) -> None:  # noqa: ANN001
         logger.info("señal %s: cerrando el servidor", signum)

@@ -1,4 +1,4 @@
-"""`EventsServicer` — implementación de `events.v1.GetEvents` (T046).
+"""`EventsServicer` — implementación de `events.v2.GetEvents` (T046).
 
 Orden de resolución (research Decisión 5 y 6):
 
@@ -39,31 +39,70 @@ _ORIGINS = {
     ORIGIN_SEED: events_pb2.SEED,
 }
 
-#: `type` string (los 5 tipos de FR-003) → enum `EventType` del contrato.
-_EVENT_TYPES = {
-    name: value
-    for name, value in events_pb2.EventType.items()
-    if name != "EVENT_TYPE_UNSPECIFIED"
+#: El clasificador razona en 5 categorías de **contenido** (heredadas de 002) y
+#: el contrato `events.v2` tiene 3 tipos más un **sistema** de vida aparte.
+#: Este es el mapeo puente, explícito y en un único sitio.
+#:
+#: ⚠️ **Temporal**: T029–T031 mueven la composición al `composer` y reducen el
+#: clasificador a los tres tipos; entonces este puente desaparece. Existe para
+#: que la partida use sucesos históricos reales mientras eso llega.
+_TYPE_TO_V2: dict[str, tuple[int, str]] = {
+    "COTIDIANO": (events_pb2.DAILY, ""),
+    "EDUCATIVO": (events_pb2.DAILY, "education"),
+    "LABORAL": (events_pb2.MAIN, "work"),
+    "RELACION": (events_pb2.RELATIONSHIPS, "relationships"),
+    "SENTIMENTAL": (events_pb2.RELATIONSHIPS, "relationships"),
 }
 
+#: Ámbito del material (FR-004/FR-005): el suceso del año es `YEAR`.
+_SCOPE_BY_V2_TYPE = {
+    events_pb2.MAIN: events_pb2.YEAR,
+    events_pb2.DAILY: events_pb2.DECADE,
+    events_pb2.RELATIONSHIPS: events_pb2.DECADE,
+}
 
-def to_life_event(event: CachedEvent) -> events_pb2.LifeEvent:
+#: Magnitud de la curva FR-009, para recorrerla al revés (ver `_score_for_points`).
+_POINTS_BY_MAGNITUDE = (0, 4, 8, 16, 30, 50, 100)
+
+
+def _score_for_points(points: int) -> int:
+    """Puntos del modelo viejo → score de `events.v2` (−6…+6).
+
+    La opción del contrato declara **scores** y el backend los convierte en
+    puntos con la curva FR-009; el clasificador todavía trae `deltas` ya en
+    puntos, así que se recorren al score más cercano de la tabla. Para los
+    valores de la propia curva el viaje de ida y vuelta es exacto (4→1→4),
+    que es el caso de todos los `TYPE_EFFECTS`.
+    """
+    magnitude = abs(int(points))
+    nearest = min(
+        range(len(_POINTS_BY_MAGNITUDE)),
+        key=lambda index: abs(_POINTS_BY_MAGNITUDE[index] - magnitude),
+    )
+    return -nearest if int(points) < 0 else nearest
+
+
+def to_life_event(event: CachedEvent, *, country: str = "") -> events_pb2.LifeEvent:
     """`CachedEvent` → mensaje `LifeEvent` del contrato (sin año: el año sólo
     viaja en el eco de `GetEventsResponse`)."""
+    v2_type, system = _TYPE_TO_V2.get(event.type, (events_pb2.DAILY, ""))
     return events_pb2.LifeEvent(
         id=event.id,
-        type=_EVENT_TYPES.get(event.type, events_pb2.COTIDIANO),
+        type=v2_type,
         text=event.text_es,
         min_age=event.min_age,
         max_age=event.max_age,
         source_url=event.source_url,
+        country=country,
+        scope=_SCOPE_BY_V2_TYPE[v2_type],
+        system=system,
         options=[
             events_pb2.EventOption(
                 id=option.get("id", ""),
                 label=option.get("label", ""),
                 fatal=bool(option.get("fatal", False)),
-                deltas=[
-                    events_pb2.StatDelta(stat=stat, value=int(value))
+                scores=[
+                    events_pb2.StatScore(stat=stat, score=_score_for_points(int(value)))
                     for stat, value in (option.get("deltas") or {}).items()
                 ],
             )
@@ -73,7 +112,7 @@ def to_life_event(event: CachedEvent) -> events_pb2.LifeEvent:
 
 
 class EventsServicer(events_pb2_grpc.EventsServiceServicer):
-    """Servidor de `events.v1`. Todas las dependencias se inyectan para
+    """Servidor de `events.v2`. Todas las dependencias se inyectan para
     poder probar la red, la caché y la semilla por separado."""
 
     def __init__(
@@ -102,7 +141,7 @@ class EventsServicer(events_pb2_grpc.EventsServiceServicer):
         selected = self._select(events, request)
 
         return events_pb2.GetEventsResponse(
-            events=[to_life_event(event) for event in selected],
+            events=[to_life_event(event, country=request.country) for event in selected],
             origin=_ORIGINS[origin],
             year=year,
         )
