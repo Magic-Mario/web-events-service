@@ -128,7 +128,9 @@ def test_the_embedded_seed_catalog_covers_every_type_and_never_runs_dry() -> Non
 
     events = load_seed_events()
     # La semilla se atribuye al país de la partida (FR-002); aquí da igual cuál.
-    projected = [to_life_event(event, country="AR") for event in events]
+    projected = [
+        to_life_event(event, country="AR", age_years=30) for event in events
+    ]
 
     def v2_name(event: events_pb2.LifeEvent) -> str:
         return events_pb2.EventType.Name(event.type)

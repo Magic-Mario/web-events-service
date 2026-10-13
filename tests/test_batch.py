@@ -97,3 +97,37 @@ def test_the_batch_respects_age_and_limit() -> None:
     # Y con `limit = 1` el lote respeta el tope del contrato.
     capped = servicer.GetEvents(_request(limit=1), None)
     assert len(capped.events) == 1
+
+
+def test_a_child_is_never_offered_a_decision_of_an_adult() -> None:
+    """FR-013: ni pareja ni trabajo le piden decidir a un niño.
+
+    Medido en pantalla el 2026-10-13: a un personaje de **1 año** le salió
+    «Contar con tu pareja» / «Guardar cierta distancia», y a los 2 años
+    «Aceptar el reto laboral» como suceso del año. El suceso puede ocurrir
+    (el `MAIN` es del país, no una acción del personaje), pero la decisión no
+    puede ser la de un adulto.
+    """
+    catalog = [
+        _event("sentimental", "SENTIMENTAL"),
+        _event("laboral", "LABORAL"),
+        _event("cotidiano", "COTIDIANO"),
+    ]
+    servicer = _servicer(catalog)
+
+    child = servicer.GetEvents(_request(age_years=1), None)
+    adult = servicer.GetEvents(_request(age_years=40), None)
+
+    child_ids = [event.id for event in child.events]
+    assert "sentimental" not in child_ids, "una pareja no le sale a un bebé"
+    laboral_child = next(event for event in child.events if event.id == "laboral")
+    assert [option.label for option in laboral_child.options] == [
+        "Fijarte en lo que ocurre",
+        "Seguir con lo tuyo",
+    ], "el trabajo le pasa al lado, no le pide un reto laboral"
+
+    # Con edad adulta, el catálogo sale tal cual (y la pareja sí aparece).
+    adult_ids = [event.id for event in adult.events]
+    assert "sentimental" in adult_ids
+    laboral_adult = next(event for event in adult.events if event.id == "laboral")
+    assert [option.label for option in laboral_adult.options] == ["Asumirlo"]

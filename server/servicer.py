@@ -67,6 +67,28 @@ _SCOPE_BY_V2_TYPE = {
 #: Magnitud de la curva FR-009, para recorrerla al revés (ver `_score_for_points`).
 _POINTS_BY_MAGNITUDE = (0, 4, 8, 16, 30, 50, 100)
 
+#: Edad mínima por **categoría de contenido** (FR-013). Un suceso de pareja no
+#: puede salirle a un bebé: la categoría no aplica, así que se descarta.
+#:
+#: ⚠️ **Temporal**, igual que el puente: T029–T031 mueven la composición al
+#: `composer` y esto desaparece con él.
+_CATEGORY_MIN_AGE: dict[str, int] = {
+    "SENTIMENTAL": 14,
+}
+
+#: Por debajo de esta edad el personaje no puede tomar una decisión de adulto,
+#: así que las categorías que la piden cambian de opciones: el suceso **ocurre**
+#: (el `MAIN` es un suceso del país, no una acción del personaje) pero no se le
+#: piden «reto laboral» ni «jornada de trabajo».
+ADULT_AGE_YEARS = 16
+
+_CHILD_OPTIONS: dict[str, list[dict[str, Any]]] = {
+    "LABORAL": [
+        {"id": "opt-1", "label": "Fijarte en lo que ocurre", "deltas": {"intelligence": 2}},
+        {"id": "opt-2", "label": "Seguir con lo tuyo", "deltas": {"happiness": 2}},
+    ],
+}
+
 
 def _score_for_points(points: int) -> int:
     """Puntos del modelo viejo → score de `events.v2` (−6…+6).
@@ -85,7 +107,9 @@ def _score_for_points(points: int) -> int:
     return -nearest if int(points) < 0 else nearest
 
 
-def to_life_event(event: CachedEvent, *, country: str) -> events_pb2.LifeEvent:
+def to_life_event(
+    event: CachedEvent, *, country: str, age_years: int
+) -> events_pb2.LifeEvent:
     """`CachedEvent` → mensaje `LifeEvent` del contrato (sin año: el año sólo
     viaja en el eco de `GetEventsResponse`).
 
@@ -97,8 +121,15 @@ def to_life_event(event: CachedEvent, *, country: str) -> events_pb2.LifeEvent:
 
     La procedencia se queda **dentro** (`CachedEvent.country`), que es lo que
     usa el filtro y lo que impide que un neutral sea `MAIN`.
+
+    Con `age_years` por debajo de `ADULT_AGE_YEARS` las categorías que asumen
+    vida adulta cambian de opciones (FR-013): el trabajo **le pasa al lado**, no
+    se le pide decidir sobre él.
     """
     v2_type, system = _TYPE_TO_V2.get(event.type, (events_pb2.DAILY, ""))
+    options = event.options
+    if age_years < ADULT_AGE_YEARS:
+        options = _CHILD_OPTIONS.get(event.type, options)
     return events_pb2.LifeEvent(
         id=event.id,
         type=v2_type,
@@ -119,7 +150,7 @@ def to_life_event(event: CachedEvent, *, country: str) -> events_pb2.LifeEvent:
                     for stat, value in (option.get("deltas") or {}).items()
                 ],
             )
-            for option in event.options
+            for option in options
         ],
     )
 
@@ -157,7 +188,10 @@ class EventsServicer(events_pb2_grpc.EventsServiceServicer):
         selected = self._select(events, request)
 
         return events_pb2.GetEventsResponse(
-            events=[to_life_event(event, country=country) for event in selected],
+            events=[
+                to_life_event(event, country=country, age_years=int(request.age_years))
+                for event in selected
+            ],
             origin=_ORIGINS[origin],
             year=year,
         )
@@ -209,6 +243,9 @@ class EventsServicer(events_pb2_grpc.EventsServiceServicer):
             for event in events
             if in_scope(event)
             and event.min_age <= request.age_years <= event.max_age
+            # FR-013: hay categorías que no aplican a un niño (una pareja, por
+            # ejemplo), por mucho que el suceso no declare edad mínima.
+            and _CATEGORY_MIN_AGE.get(event.type, 0) <= request.age_years
             and event.id not in already_seen
         ]
         limit = int(request.limit)
