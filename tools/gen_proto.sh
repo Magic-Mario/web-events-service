@@ -7,8 +7,8 @@
 #
 # El repo es el dueño de sus contratos (Decisión 13 de la 001), así que cada
 # repo genera su propio stub desde SU copia del .proto:
-#   cloud-project-backend -> stub de CLIENTE de events.v1
-#   web-events-service    -> stub de SERVIDOR de events.v1
+#   cloud-project-backend -> stub de CLIENTE de events.v2
+#   web-events-service    -> stub de SERVIDOR de events.v2
 #
 # Los stubs NO se commitean (ver `.gitignore`): `server/servicer.py` los
 # importa en runtime, así que TANTO `uv run` local COMO el Dockerfile tienen
