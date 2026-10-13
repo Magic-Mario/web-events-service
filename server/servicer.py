@@ -161,7 +161,14 @@ class EventsServicer(events_pb2_grpc.EventsServiceServicer):
         ]
 
     def _select(self, events: list[CachedEvent], request) -> list[CachedEvent]:
-        """Edad (FR-013) → no repetir (SC-005) → `limit` (FR-003a)."""
+        """FR-007: un DAILY, un RELATIONSHIPS y el MAIN del año, sin repetir.
+
+        El orden es el de presentación (data-model §5). El MAIN es del año, así
+        que se sirve **una vez**: en cuanto el backend lo consume entra en
+        `exclude_ids` y no vuelve a salir, ni en el mismo año ni en los meses
+        siguientes. Si la época no da para los tres tipos, se completa con lo
+        que haya: el avance nunca se queda sin lote.
+        """
         already_seen = set(request.exclude_ids)
         eligible = [
             event
@@ -170,7 +177,35 @@ class EventsServicer(events_pb2_grpc.EventsServiceServicer):
             and event.id not in already_seen
         ]
         limit = int(request.limit)
-        return eligible[:limit] if limit > 0 else []
+        if limit <= 0:
+            return []
+
+        chosen: list[CachedEvent] = []
+        chosen_ids: set[str] = set()
+
+        def pick(kind: int) -> None:
+            for event in eligible:
+                if event.id in chosen_ids:
+                    continue
+                if _TYPE_TO_V2.get(event.type, (events_pb2.DAILY, ""))[0] == kind:
+                    chosen.append(event)
+                    chosen_ids.add(event.id)
+                    return
+
+        for kind in (events_pb2.DAILY, events_pb2.RELATIONSHIPS, events_pb2.MAIN):
+            if len(chosen) >= limit:
+                break
+            pick(kind)
+
+        # Relleno: una época puede no tener material de los tres tipos.
+        for event in eligible:
+            if len(chosen) >= limit:
+                break
+            if event.id not in chosen_ids:
+                chosen.append(event)
+                chosen_ids.add(event.id)
+
+        return chosen
 
 
 def build_servicer() -> EventsServicer:
