@@ -93,6 +93,7 @@ MIN_TEXT_LENGTH = 15
 _MAX_ATTEMPTS = 3
 _BACKOFF_SECONDS = 1.5
 
+
 _REF_RE = re.compile(r"<ref[^>]*>.*?</ref>|<ref[^>]*/>", re.DOTALL)
 _TEMPLATE_RE = re.compile(r"\{\{[^{}]*\}\}")
 
@@ -115,7 +116,12 @@ class WikipediaError(RuntimeError):
 # --- HTTP ------------------------------------------------------------------
 
 
-def _api(params: dict[str, str]) -> dict:
+def api_get(params: dict[str, str]) -> dict:
+    """Una llamada a la MediaWiki Action API con `User-Agent`, timeout y reintentos.
+
+    Es el **transporte compartido** de las dos fuentes: el artículo del año
+    (`sources/wikipedia.py`) y el anexo de país (`sources/country_year.py`).
+    """
     url = f"{WIKIPEDIA_BASE_URL}?{urllib.parse.urlencode(params)}"
     last_error: Exception | None = None
 
@@ -150,7 +156,7 @@ def _api(params: dict[str, str]) -> dict:
 
 def fetch_toc(year: int) -> list[dict]:
     """`prop=tocdata` → secciones con `index`, `line`, `tocLevel` y offset."""
-    payload = _api(
+    payload = api_get(
         {
             "action": "parse",
             "page": str(year),
@@ -167,7 +173,7 @@ def fetch_toc(year: int) -> list[dict]:
 
 def fetch_wikitext(year: int) -> str:
     """`prop=wikitext` de la página completa, en una sola petición."""
-    payload = _api(
+    payload = api_get(
         {
             "action": "parse",
             "page": str(year),
@@ -294,7 +300,7 @@ def parse_bullets(wikitext: str) -> list[str]:
 # --- ensamblaje ------------------------------------------------------------
 
 
-def _to_cached(event: PlayEvent, year: int) -> CachedEvent:
+def to_cached(event: PlayEvent, year: int) -> CachedEvent:
     return CachedEvent(
         id=event.id,
         year=year,
@@ -305,6 +311,7 @@ def _to_cached(event: PlayEvent, year: int) -> CachedEvent:
         max_age=event.max_age,
         options=event.options,
         source_url=event.source_url,
+        country=event.country,
     )
 
 
@@ -342,7 +349,7 @@ def fetch_year_events(year: int) -> list[CachedEvent]:
 
         section_events = 0
         for bullet in parse_bullets(text):
-            event = _to_cached(
+            event = to_cached(
                 classify(year=year, section=line, text=bullet, source_url=source_url),
                 year,
             )
@@ -368,10 +375,12 @@ __all__ = [
     "MONTHS",
     "WANTED_SECTIONS",
     "WikipediaError",
+    "api_get",
     "fetch_toc",
     "fetch_wikitext",
     "fetch_year_events",
     "parse_bullets",
     "slice_sections",
     "strip_markup",
+    "to_cached",
 ]

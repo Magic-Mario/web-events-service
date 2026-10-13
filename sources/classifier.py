@@ -268,6 +268,13 @@ class PlayEvent:
     section: str
     source_url: str = ""
     options: list[dict[str, Any]] = field(default_factory=list)
+    country: str = ""
+    """FR-002: país **al que pertenece** el suceso; vacío si es neutral.
+
+    Lo pone quien conoce el ámbito: el anexo del país (siempre suyo) o el
+    artículo global tras pasar el filtro (``own``). Nunca se estampa el país
+    del jugador sobre un suceso ajeno.
+    """
 
 
 def _normalize(value: str) -> str:
@@ -312,7 +319,7 @@ def _options_for(event_type: str, normalized_text: str) -> list[dict[str, Any]]:
 
 
 def classify(
-    *, year: int, section: str, text: str, source_url: str = ""
+    *, year: int, section: str, text: str, source_url: str = "", country: str = ""
 ) -> PlayEvent:
     """Convierte un suceso en un evento jugable. Determinista y puro."""
     normalized_text = _normalize(text)
@@ -328,4 +335,5 @@ def classify(
         section=section,
         source_url=source_url,
         options=_options_for(event_type, normalized_text),
+        country=country,
     )

@@ -109,12 +109,12 @@ def test_second_query_is_served_from_cache_and_never_goes_to_the_internet(
     repo = EventsRepository()
     calls = {"fetch": 0}
 
-    def fetch(year: int) -> list[CachedEvent]:
+    def fetch(year: int, country: str) -> list[CachedEvent]:
         calls["fetch"] += 1
         return EVENTS
 
-    first, first_origin = repo.get_or_fetch(test_year, fetch)
-    second, second_origin = repo.get_or_fetch(test_year, fetch)
+    first, first_origin = repo.get_or_fetch(test_year, "", fetch)
+    second, second_origin = repo.get_or_fetch(test_year, "", fetch)
 
     assert calls["fetch"] == 1, "SC-010: solo la primera consulta sale a internet"
     assert first_origin == "FETCHED"
@@ -137,7 +137,7 @@ def test_an_empty_result_is_not_cached_forever(test_year: int) -> None:
     """Si no hay sucesos no se cachea el vacío: el año se volverá a buscar."""
     repo = EventsRepository()
 
-    events, origin = repo.get_or_fetch(test_year, lambda year: [])
+    events, origin = repo.get_or_fetch(test_year, "", lambda year, country: [])
 
     assert events == []
     assert origin == "FETCHED"

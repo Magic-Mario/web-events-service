@@ -48,10 +48,17 @@ class CachedEvent:
     options: list[dict[str, Any]] = field(default_factory=list)
     source_url: str = ""
     fetched_at: str = ""
+    country: str = ""
+    """FR-002: país **al que pertenece** el suceso; vacío si es neutral.
+
+    Va en el item —y no sólo en el texto— porque el anexo de un país produce
+    sucesos que no nombran a su país («…medidas del presidente Marroquín»): sin
+    este campo, ese suceso pasaría el filtro de cualquier otro país.
+    """
 
     def to_item(self, year: int, fetched_at: str) -> dict[str, Any]:
         return {
-            "PK": f"YEAR#{year}",
+            "PK": year_key(year, self.country),
             "SK": f"EVT#{self.id}",
             "id": self.id,
             "year": year,
@@ -63,6 +70,7 @@ class CachedEvent:
             "options": _to_dynamo(self.options),
             "source_url": self.source_url,
             "fetched_at": fetched_at,
+            "country": self.country,
         }
 
     @classmethod
@@ -79,6 +87,7 @@ class CachedEvent:
             options=data.get("options") or [],
             source_url=data.get("source_url", ""),
             fetched_at=data.get("fetched_at", ""),
+            country=data.get("country", ""),
         )
 
 
@@ -110,6 +119,17 @@ def _now() -> str:
     )
 
 
+def year_key(year: int, country: str = "") -> str:
+    """`PK` de la partición de un año: `YEAR#<year>#<country>` (FR-002, T015).
+
+    El país entra en la clave porque el anexo de un país es material **suyo**:
+    guardarlo en una partición compartida haría que un suceso de Colombia se
+    sirviera a un personaje argentino. Sin país se conserva la clave de 002
+    (`YEAR#<year>`), que es la que sigue usando un uso sin catálogo.
+    """
+    return f"YEAR#{year}#{country}" if country else f"YEAR#{year}"
+
+
 class EventsRepository:
     """Acceso a `${PROJECT}-events-cache`."""
 
@@ -136,11 +156,11 @@ class EventsRepository:
 
     # --- lectura ----------------------------------------------------------
 
-    def get_year(self, year: int) -> list[CachedEvent]:
-        """`Query PK = YEAR#<yyyy>`, ordenado por `SK` y con paginación."""
+    def get_year(self, year: int, country: str = "") -> list[CachedEvent]:
+        """`Query PK = YEAR#<year>#<country>`, ordenado por `SK` y con paginación."""
         items: list[dict[str, Any]] = []
         kwargs: dict[str, Any] = {
-            "KeyConditionExpression": Key("PK").eq(f"YEAR#{year}"),
+            "KeyConditionExpression": Key("PK").eq(year_key(year, country)),
             "ScanIndexForward": True,
         }
         while True:
@@ -153,36 +173,44 @@ class EventsRepository:
         return [CachedEvent.from_item(item) for item in items]
 
     def get_or_fetch(
-        self, year: int, fetch: Callable[[int], Iterable[CachedEvent]]
+        self,
+        year: int,
+        country: str,
+        fetch: Callable[[int, str], Iterable[CachedEvent]],
     ) -> tuple[list[CachedEvent], str]:
         """Primero caché; sólo si está vacía va a la fuente externa (SC-010).
+
+        El **ámbito forma parte de la consulta**: cada `(año, país)` se busca
+        una sola vez, y lo cacheado para un país no se sirve a otro.
 
         Devuelve `(eventos, origin)`. Un año vacío **no** se cachea, para que
         la búsqueda se pueda repetir más adelante. Si `fetch` lanza, la
         excepción se propaga: quien decide cómo degradar es el `servicer`
         (Decisión 6: si algo falla, se responde con la semilla).
         """
-        cached = self.get_year(year)
+        cached = self.get_year(year, country)
         if cached:
             return cached, ORIGIN_CACHED
 
-        fetched = list(fetch(year))
+        fetched = list(fetch(year, country))
         if not fetched:
             return [], ORIGIN_FETCHED
 
-        self.put_year(year, fetched)
+        self.put_year(year, fetched, country)
         return fetched, ORIGIN_FETCHED
 
     # --- escritura --------------------------------------------------------
 
-    def put_year(self, year: int, events: Iterable[CachedEvent]) -> None:
+    def put_year(
+        self, year: int, events: Iterable[CachedEvent], country: str = ""
+    ) -> None:
         """`BatchWriteItem` de todo el año, **una sola vez**.
 
-        Si el año ya está cacheado la escritura se ignora (FR-003a: nunca se
-        reescribe un año ya cacheado).
+        Si el `(año, país)` ya está cacheado la escritura se ignora (FR-003a:
+        nunca se reescribe un año ya cacheado).
         """
         batch_events = list(events)
-        if not batch_events or self.get_year(year):
+        if not batch_events or self.get_year(year, country):
             return
 
         fetched_at = _now()

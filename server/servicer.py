@@ -1,15 +1,18 @@
 """`EventsServicer` — implementación de `events.v2.GetEvents` (T046).
 
-Orden de resolución (research Decisión 5 y 6):
+Orden de resolución (research Decisión 5 y 6, y Decisión 1 para el ámbito):
 
-    caché (DynamoDB)  →  Wikipedia  →  catálogo semilla
+    caché (DynamoDB, por año **y país**)  →  fuente *country-first*  →  semilla
 
 y después, sea cual sea el origen, los mismos filtros para todos:
 
+- **ámbito** (FR-002): nunca se presenta un suceso de otro país, y uno **sin
+  señal de país** no puede ser `MAIN` (Decisión 1) — «el suceso del año» tiene
+  que ser real y del país;
 - `min_age ≤ age_years ≤ max_age` (FR-013);
 - `exclude_ids` ya consumidos por la vida (SC-005);
-- `limit` — **nunca** devuelve más de 2 con granularidad mensual ni 5 con
-  anual (FR-003a): el servicio respeta el `limit` que pida el backend.
+- `limit` — el backend pide el tamaño del lote (FR-007) y el servicio nunca da
+  más de lo pedido.
 
 Si algo falla (DynamoDB, red, timeout o fuente vacía) la respuesta sale de la
 semilla con `origin = SEED`: la partida **nunca** queda bloqueada (Decisión 6,
@@ -82,9 +85,19 @@ def _score_for_points(points: int) -> int:
     return -nearest if int(points) < 0 else nearest
 
 
-def to_life_event(event: CachedEvent, *, country: str = "") -> events_pb2.LifeEvent:
+def to_life_event(event: CachedEvent, *, country: str) -> events_pb2.LifeEvent:
     """`CachedEvent` → mensaje `LifeEvent` del contrato (sin año: el año sólo
-    viaja en el eco de `GetEventsResponse`)."""
+    viaja en el eco de `GetEventsResponse`).
+
+    El `country` es el **atribuido** (FR-002): el país al que pertenece el
+    suceso para esta partida. El `servicer` ya filtró por **procedencia** —el
+    material de otro país no llega hasta aquí—, así que todo lo que se presenta
+    se atribuye al país pedido. Un suceso genérico (semilla) es «la vida
+    cotidiana de ese país» (FR-005), no un suceso real ajeno.
+
+    La procedencia se queda **dentro** (`CachedEvent.country`), que es lo que
+    usa el filtro y lo que impide que un neutral sea `MAIN`.
+    """
     v2_type, system = _TYPE_TO_V2.get(event.type, (events_pb2.DAILY, ""))
     return events_pb2.LifeEvent(
         id=event.id,
@@ -128,9 +141,12 @@ class EventsServicer(events_pb2_grpc.EventsServiceServicer):
 
     def GetEvents(self, request, context):  # noqa: N802
         year = int(request.year)
+        country = request.country
 
         try:
-            events, origin = self._repository.get_or_fetch(year, self._fetch)
+            events, origin = self._repository.get_or_fetch(
+                year, country, self._fetch
+            )
         except Exception:  # noqa: BLE001 — degradar es obligatorio, nunca abortar
             events, origin = [], ORIGIN_SEED
 
@@ -141,7 +157,7 @@ class EventsServicer(events_pb2_grpc.EventsServiceServicer):
         selected = self._select(events, request)
 
         return events_pb2.GetEventsResponse(
-            events=[to_life_event(event, country=request.country) for event in selected],
+            events=[to_life_event(event, country=country) for event in selected],
             origin=_ORIGINS[origin],
             year=year,
         )
@@ -161,19 +177,38 @@ class EventsServicer(events_pb2_grpc.EventsServiceServicer):
         ]
 
     def _select(self, events: list[CachedEvent], request) -> list[CachedEvent]:
-        """FR-007: un DAILY, un RELATIONSHIPS y el MAIN del año, sin repetir.
+        """FR-007 + FR-002: el lote del período, con el ámbito ya resuelto.
 
-        El orden es el de presentación (data-model §5). El MAIN es del año, así
-        que se sirve **una vez**: en cuanto el backend lo consume entra en
-        `exclude_ids` y no vuelve a salir, ni en el mismo año ni en los meses
-        siguientes. Si la época no da para los tres tipos, se completa con lo
-        que haya: el avance nunca se queda sin lote.
+        El orden de presentación es el del data-model §5 (DAILY, RELATIONSHIPS,
+        MAIN) y el MAIN se sirve **una vez**: en cuanto el backend lo consume
+        entra en `exclude_ids` y no vuelve a salir.
+
+        Ámbito (FR-002, Decisión 1):
+
+        - un suceso de **otro** país no se presenta nunca;
+        - un suceso **neutral** (sin señal de país) sólo puede ser `DAILY` o
+          `RELATIONSHIPS`: el `MAIN` es «el suceso real del año del país»
+          (FR-004), así que una frase genérica no puede ocupar su lugar.
         """
+        requested = request.country
         already_seen = set(request.exclude_ids)
-        eligible = [
+
+        # Sin país en la petición no hay ámbito que aplicar: es el uso sin
+        # catálogo (y el de las pruebas de la fuente). Con país, manda FR-002.
+        def in_scope(event: CachedEvent) -> bool:
+            return not requested or event.country in ("", requested)
+
+        def owned(event: CachedEvent) -> bool:
+            return not requested or event.country == requested
+
+        def kind_of(event: CachedEvent) -> int:
+            return _TYPE_TO_V2.get(event.type, (events_pb2.DAILY, ""))[0]
+
+        pool = [
             event
             for event in events
-            if event.min_age <= request.age_years <= event.max_age
+            if in_scope(event)
+            and event.min_age <= request.age_years <= event.max_age
             and event.id not in already_seen
         ]
         limit = int(request.limit)
@@ -183,27 +218,33 @@ class EventsServicer(events_pb2_grpc.EventsServiceServicer):
         chosen: list[CachedEvent] = []
         chosen_ids: set[str] = set()
 
-        def pick(kind: int) -> None:
-            for event in eligible:
-                if event.id in chosen_ids:
+        def pick(kind: int, candidates: list[CachedEvent]) -> None:
+            for event in candidates:
+                if event.id in chosen_ids or kind_of(event) != kind:
                     continue
-                if _TYPE_TO_V2.get(event.type, (events_pb2.DAILY, ""))[0] == kind:
-                    chosen.append(event)
-                    chosen_ids.add(event.id)
-                    return
+                chosen.append(event)
+                chosen_ids.add(event.id)
+                return
 
         for kind in (events_pb2.DAILY, events_pb2.RELATIONSHIPS, events_pb2.MAIN):
             if len(chosen) >= limit:
                 break
-            pick(kind)
+            # El MAIN exige un suceso del país (Decisión 1).
+            candidates = [e for e in pool if owned(e)] if kind == events_pb2.MAIN else pool
+            pick(kind, candidates)
 
-        # Relleno: una época puede no tener material de los tres tipos.
-        for event in eligible:
+        # Relleno: una época puede no tener material de los tres tipos. Nunca
+        # entra aquí un neutral marcado como MAIN, que sería lo contrario de
+        # FR-004 — pero sí como DAILY/RELATIONSHIPS.
+        for event in pool:
             if len(chosen) >= limit:
                 break
-            if event.id not in chosen_ids:
-                chosen.append(event)
-                chosen_ids.add(event.id)
+            if event.id in chosen_ids:
+                continue
+            if kind_of(event) == events_pb2.MAIN and not owned(event):
+                continue
+            chosen.append(event)
+            chosen_ids.add(event.id)
 
         return chosen
 
@@ -211,11 +252,11 @@ class EventsServicer(events_pb2_grpc.EventsServiceServicer):
 def build_servicer() -> EventsServicer:
     """Ensambla el `servicer` con sus dependencias reales (para `__main__`)."""
     from seed_catalog import load_seed_events
-    from sources.wikipedia import fetch_year_events
+    from sources.country_year import fetch_scoped_year_events
 
     return EventsServicer(
         repository=EventsRepository(),
-        fetch=fetch_year_events,
+        fetch=fetch_scoped_year_events,
         seed_events=load_seed_events(),
     )
 

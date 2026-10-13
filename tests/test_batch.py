@@ -16,7 +16,9 @@ from server._generated import events_pb2
 from server.servicer import EventsServicer
 
 
-def _event(event_id: str, kind: str, *, min_age: int = 0, max_age: int = 120):
+def _event(
+    event_id: str, kind: str, *, min_age: int = 0, max_age: int = 120, country: str = "AR"
+):
     return CachedEvent(
         id=event_id,
         section="Acontecimientos",
@@ -26,6 +28,7 @@ def _event(event_id: str, kind: str, *, min_age: int = 0, max_age: int = 120):
         max_age=max_age,
         options=[{"id": "opt-1", "label": "Asumirlo", "deltas": {"happiness": 3}}],
         source_url="https://es.wikipedia.org/",
+        country=country,
     )
 
 
@@ -40,7 +43,6 @@ def _request(**overrides) -> events_pb2.GetEventsRequest:
     payload = dict(year=1990, age_years=30, limit=3, country="AR")
     payload.update(overrides)
     return events_pb2.GetEventsRequest(**payload)
-
 
 def _kinds(response) -> list[str]:
     return [events_pb2.EventType.Name(event.type) for event in response.events]

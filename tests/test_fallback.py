@@ -76,15 +76,15 @@ def _servicer(fetch, seed=None) -> EventsServicer:
     )
 
 
-def _timeout(year: int) -> list[CachedEvent]:
+def _timeout(year: int, country: str) -> list[CachedEvent]:
     raise TimeoutError("la fuente externa no contestó")
 
 
-def _unreachable(year: int) -> list[CachedEvent]:
+def _unreachable(year: int, country: str) -> list[CachedEvent]:
     raise ConnectionError("sin salida a internet")
 
 
-def _nothing(year: int) -> list[CachedEvent]:
+def _nothing(year: int, country: str) -> list[CachedEvent]:
     return []
 
 
@@ -127,7 +127,8 @@ def test_the_embedded_seed_catalog_covers_every_type_and_never_runs_dry() -> Non
     from server.servicer import to_life_event
 
     events = load_seed_events()
-    projected = [to_life_event(event) for event in events]
+    # La semilla se atribuye al país de la partida (FR-002); aquí da igual cuál.
+    projected = [to_life_event(event, country="AR") for event in events]
 
     def v2_name(event: events_pb2.LifeEvent) -> str:
         return events_pb2.EventType.Name(event.type)
@@ -199,12 +200,12 @@ def test_excluded_ids_are_never_served_again() -> None:
 def test_a_cached_year_is_served_without_touching_the_network(test_year: int) -> None:
     calls = {"fetch": 0}
 
-    def fetch(year: int) -> list[CachedEvent]:
+    def fetch(year: int, country: str) -> list[CachedEvent]:
         calls["fetch"] += 1
         return _seed()
 
     repository = EventsRepository()
-    repository.get_or_fetch(test_year, fetch)
+    repository.get_or_fetch(test_year, "", fetch)
 
     servicer = EventsServicer(
         repository=repository, fetch=fetch, seed_events=_seed()
@@ -219,7 +220,7 @@ def test_a_cached_year_is_served_without_touching_the_network(test_year: int) ->
 def test_a_fresh_year_is_fetched_once_and_persisted(test_year: int) -> None:
     calls = {"fetch": 0}
 
-    def fetch(year: int) -> list[CachedEvent]:
+    def fetch(year: int, country: str) -> list[CachedEvent]:
         calls["fetch"] += 1
         return _seed()
 
